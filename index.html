@@ -4,7 +4,7 @@ import { connect } from 'cloudflare:sockets';
 
 // How to generate your own UUID:
 // [Windows] Press "Win + R", input cmd and run:  Powershell -NoExit -Command "[guid]::NewGuid()"
-let userID = 'd042d11e-d424-4583-b36e-524ab1f0afa4';
+let userID = 'f352d11e-d424-4583-b36e-524ab1f0afa4';
 
 let proxyIP = '';
 
@@ -68,7 +68,8 @@ async function vlessOverWSHandler(request) {
 	const webSocketPair = new WebSocketPair();
 	const [client, webSocket] = Object.values(webSocketPair);
 
-	webSocket.accept();
+	webSocket.binaryType = "arraybuffer";
+	webSocket.accept({ allowHalfOpen: true });
 
 	let address = '';
 	let portWithRandomLog = '';
@@ -253,8 +254,8 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
 			// https://streams.spec.whatwg.org/#example-rs-push-backpressure
 		},
 		cancel(reason) {
-			// 1. pipe WritableStream has error, this cancel will called, so ws handle server close into here
-			// 2. if readableStream is cancel, all controller.close/enqueue need skip,
+			// 1. if pipe WritableStream has error, this cancel will called, so ws handle server close into here
+			// 2. if readableStream is cancel, all controller.close/enqueue need skip
 			// 3. but from testing controller.error still work even if readableStream is cancel
 			if (readableStreamCancel) {
 				return;
@@ -332,7 +333,7 @@ function processVlessHeader(
 
 	// 1--> ipv4  addressLength =4
 	// 2--> domain name addressLength=addressBuffer[1]
-	// 3--> ipv6  addressLength =16
+	// 3--> ipv6 addressLength=16
 	const addressType = addressBuffer[0];
 	let addressLength = 0;
 	let addressValueIndex = addressIndex + 1;
@@ -358,18 +359,16 @@ function processVlessHeader(
 			const dataView = new DataView(
 				vlessBuffer.slice(addressValueIndex, addressValueIndex + addressLength)
 			);
-			// 2001:0db8:85a3:0000:0000:8a2e:0370:7334
 			const ipv6 = [];
 			for (let i = 0; i < 8; i++) {
 				ipv6.push(dataView.getUint16(i * 2).toString(16));
 			}
 			addressValue = ipv6.join(':');
-			// seems no need add [] for ipv6
 			break;
 		default:
 			return {
 				hasError: true,
-				message: `invild  addressType is ${addressType}`,
+				message: `invild addressType is ${addressType}`,
 			};
 	}
 	if (!addressValue) {
@@ -405,7 +404,7 @@ async function remoteSocketToWS(remoteSocket, webSocket, vlessResponseHeader, re
 	let chunks = [];
 	/** @type {ArrayBuffer | null} */
 	let vlessHeader = vlessResponseHeader;
-	let hasIncomingData = false; // check if remoteSocket has incoming data
+	let hasIncomingData = false;
 	await remoteSocket.readable
 		.pipeTo(
 			new WritableStream({
@@ -418,7 +417,6 @@ async function remoteSocketToWS(remoteSocket, webSocket, vlessResponseHeader, re
 				 */
 				async write(chunk, controller) {
 					hasIncomingData = true;
-					// remoteChunkCount++;
 					if (webSocket.readyState !== WS_READY_STATE_OPEN) {
 						controller.error(
 							'webSocket.readyState is not open, maybe close'
@@ -428,20 +426,14 @@ async function remoteSocketToWS(remoteSocket, webSocket, vlessResponseHeader, re
 						webSocket.send(await new Blob([vlessHeader, chunk]).arrayBuffer());
 						vlessHeader = null;
 					} else {
-						// seems no need rate limit this, CF seems fix this??..
-						// if (remoteChunkCount > 20000) {
-						// 	// cf one package is 4096 byte(4kb),  4096 * 20000 = 80M
-						// 	await delay(1);
-						// }
 						webSocket.send(chunk);
 					}
 				},
 				close() {
 					log(`remoteConnection!.readable is close with hasIncomingData is ${hasIncomingData}`);
-					// safeCloseWebSocket(webSocket); // no need server close websocket frist for some case will casue HTTP ERR_CONTENT_LENGTH_MISMATCH issue, client will send close event anyway.
 				},
 				abort(reason) {
-					console.error(`remoteConnection!.readable abort`, reason);
+					console.error(`remoteSocketToWS has exception`, reason);
 				},
 			})
 		)
@@ -453,9 +445,6 @@ async function remoteSocketToWS(remoteSocket, webSocket, vlessResponseHeader, re
 			safeCloseWebSocket(webSocket);
 		});
 
-	// seems is cf connect socket have error,
-	// 1. Socket.closed will have error
-	// 2. Socket.readable will be close without any data coming
 	if (hasIncomingData === false && retry) {
 		log(`retry`)
 		retry();
@@ -472,7 +461,6 @@ function base64ToArrayBuffer(base64Str) {
 		return { error: null };
 	}
 	try {
-		// go use modified Base64 for URL rfc4648 which js atob not support
 		base64Str = base64Str.replace(/-/g, '+').replace(/_/g, '/');
 		const decode = atob(base64Str);
 		const arryBuffer = Uint8Array.from(decode, (c) => c.charCodeAt(0));
@@ -493,8 +481,9 @@ function isValidUUID(uuid) {
 
 const WS_READY_STATE_OPEN = 1;
 const WS_READY_STATE_CLOSING = 2;
+
 /**
- * Normally, WebSocket will not has exceptions when close.
+ * Normally, WebSocket will not have exceptions when close.
  * @param {import("@cloudflare/workers-types").WebSocket} socket
  */
 function safeCloseWebSocket(socket) {
@@ -511,9 +500,32 @@ const byteToHex = [];
 for (let i = 0; i < 256; ++i) {
 	byteToHex.push((i + 256).toString(16).slice(1));
 }
+
 function unsafeStringify(arr, offset = 0) {
-	return (byteToHex[arr[offset + 0]] + byteToHex[arr[offset + 1]] + byteToHex[arr[offset + 2]] + byteToHex[arr[offset + 3]] + "-" + byteToHex[arr[offset + 4]] + byteToHex[arr[offset + 5]] + "-" + byteToHex[arr[offset + 6]] + byteToHex[arr[offset + 7]] + "-" + byteToHex[arr[offset + 8]] + byteToHex[arr[offset + 9]] + "-" + byteToHex[arr[offset + 10]] + byteToHex[arr[offset + 11]] + byteToHex[arr[offset + 12]] + byteToHex[arr[offset + 13]] + byteToHex[arr[offset + 14]] + byteToHex[arr[offset + 15]]).toLowerCase();
+	return (
+		byteToHex[arr[offset + 0]] +
+		byteToHex[arr[offset + 1]] +
+		byteToHex[arr[offset + 2]] +
+		byteToHex[arr[offset + 3]] +
+		"-" +
+		byteToHex[arr[offset + 4]] +
+		byteToHex[arr[offset + 5]] +
+		"-" +
+		byteToHex[arr[offset + 6]] +
+		byteToHex[arr[offset + 7]] +
+		"-" +
+		byteToHex[arr[offset + 8]] +
+		byteToHex[arr[offset + 9]] +
+		"-" +
+		byteToHex[arr[offset + 10]] +
+		byteToHex[arr[offset + 11]] +
+		byteToHex[arr[offset + 12]] +
+		byteToHex[arr[offset + 13]] +
+		byteToHex[arr[offset + 14]] +
+		byteToHex[arr[offset + 15]]
+	).toLowerCase();
 }
+
 function stringify(arr, offset = 0) {
 	const uuid = unsafeStringify(arr, offset);
 	if (!isValidUUID(uuid)) {
@@ -537,8 +549,6 @@ async function handleUDPOutBound(webSocket, vlessResponseHeader, log) {
 
 		},
 		transform(chunk, controller) {
-			// udp message 2 byte is the the length of udp data
-			// TODO: this should have bug, beacsue maybe udp chunk can be in two websocket message
 			for (let index = 0; index < chunk.byteLength;) {
 				const lengthBuffer = chunk.slice(index, index + 2);
 				const udpPakcetLength = new DataView(lengthBuffer).getUint16(0);
@@ -553,7 +563,6 @@ async function handleUDPOutBound(webSocket, vlessResponseHeader, log) {
 		}
 	});
 
-	// only handle dns udp for now
 	transformStream.readable.pipeTo(new WritableStream({
 		async write(chunk) {
 			const resp = await fetch('https://1.1.1.1/dns-query',
@@ -566,7 +575,6 @@ async function handleUDPOutBound(webSocket, vlessResponseHeader, log) {
 				})
 			const dnsQueryResult = await resp.arrayBuffer();
 			const udpSize = dnsQueryResult.byteLength;
-			// console.log([...new Uint8Array(dnsQueryResult)].map((x) => x.toString(16)));
 			const udpSizeBuffer = new Uint8Array([(udpSize >> 8) & 0xff, udpSize & 0xff]);
 			if (webSocket.readyState === WS_READY_STATE_OPEN) {
 				log(`doh success and dns message length is ${udpSize}`);
@@ -602,7 +610,7 @@ async function handleUDPOutBound(webSocket, vlessResponseHeader, log) {
  * @returns {string}
  */
 function getVLESSConfig(userID, hostName) {
-	const vlessMain = `vless://${userID}@${hostName}:443?encryption=none&security=tls&sni=${hostName}&fp=randomized&type=ws&host=${hostName}&path=%2F%3Fed%3D2048#${hostName}`
+	const vlessMain = `vless://${userID}@${hostName}:443?encryption=none&security=tls&sni=${hostName}&fp=randomized&type=ws&host=${hostName}&path=%2F%3Fed%3D2926#${hostName}`
 	return `
 ################################################################
 v2ray
@@ -623,7 +631,7 @@ clash-meta
   sni: ${hostName}
   client-fingerprint: chrome
   ws-opts:
-    path: "/?ed=2048"
+    path: "/?ed=2926"
     headers:
       host: ${hostName}
 ---------------------------------------------------------------
